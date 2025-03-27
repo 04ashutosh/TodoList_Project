@@ -1,70 +1,206 @@
-# Getting Started with Create React App
+# Kubernetes Deployment with Minikube, Docker, and Horizontal Pod Autoscaler
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+## Overview
+This guide explains how to deploy a React application in a Kubernetes cluster using Minikube with two worker nodes. The Docker image is pushed to Docker Hub and used for deployment. The setup includes:
+- Creating a **Dockerfile**
+- Writing **Kubernetes deployment and service YAML files**
+- Setting up **Horizontal Pod Autoscaler (HPA)**
+- Configuring a **rolling update** with rollback capabilities
+- Viewing logs using `kubectl logs`
 
-## Available Scripts
+---
+## **Step 1: Create a Dockerfile**
+Create a `Dockerfile` for your React application.
 
-In the project directory, you can run:
+```dockerfile
+# Use Node.js as the base image
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package.json .
+RUN npm install
+COPY . .
+RUN npm run build
 
-### `npm start`
+# Use Nginx to serve the build files
+FROM nginx:alpine
+COPY --from=builder /app/build /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+---
+## **Step 2: Build and Push Image to Docker Hub**
+Run the following commands to build and push your image to **Docker Hub**:
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+```sh
+# Build the Docker image
+docker build -t ashutoshdash2004/react-app:latest .
 
-### `npm test`
+# Log in to Docker Hub
+docker login
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+# Push the image to Docker Hub
+docker push ashutoshdash2004/react-app:latest
+```
 
-### `npm run build`
+---
+## **Step 3: Start Minikube with 2 Worker Nodes**
+Run the following to start Minikube with two nodes:
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+```sh
+minikube start --nodes=2
+```
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+---
+## **Step 4: Create Deployment YAML**
+Create a `deployment.yaml` file to deploy the React app with **3 replicas**.
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: react-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: react-app
+  template:
+    metadata:
+      labels:
+        app: react-app
+    spec:
+      containers:
+        - name: react-app
+          image: ashutoshdash2004/react-app:latest
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "100m"
+            limits:
+              cpu: "500m"
+```
 
-### `npm run eject`
+Apply the deployment:
+```sh
+kubectl apply -f deployment.yaml
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+---
+## **Step 5: Create a Service YAML**
+Create `service.yaml` to expose the React app.
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: react-app-service
+spec:
+  selector:
+    app: react-app
+  type: NodePort
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+      nodePort: 31234
+```
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+Apply the service:
+```sh
+kubectl apply -f service.yaml
+```
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+Check service details:
+```sh
+kubectl get services
+```
 
-## Learn More
+---
+## **Step 6: Set Up Horizontal Pod Autoscaler (HPA)**
+Create `hpa.yaml` to scale pods when CPU usage exceeds 50%.
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: react-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: react-app
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+```
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+Apply HPA:
+```sh
+kubectl apply -f hpa.yaml
+```
 
-### Code Splitting
+Check HPA status:
+```sh
+kubectl get hpa
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+---
+## **Step 7: Rolling Update & Rollback**
 
-### Analyzing the Bundle Size
+### **Rolling Update**
+Update the `deployment.yaml` to use a new image version and apply it:
+```sh
+kubectl set image deployment/react-app react-app=ashutoshdash2004/react-app:v2
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+Monitor update progress:
+```sh
+kubectl rollout status deployment/react-app
+```
 
-### Making a Progressive Web App
+### **Rollback in Case of Failure**
+Rollback if the new version has issues:
+```sh
+kubectl rollout undo deployment/react-app
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+---
+## **Step 8: View Application Logs**
+To check logs of a running pod:
+```sh
+kubectl logs -f <pod-name>
+```
+Get pod names:
+```sh
+kubectl get pods
+```
 
-### Advanced Configuration
+---
+## **Step 9: Simulate Load to Trigger Scaling**
+Run a stress test inside a temporary pod:
+```sh
+kubectl run --rm -it --image=busybox stress-test -- /bin/sh
+while true; do wget -q -O- http://react-app-service.default.svc.cluster.local; done
+```
+Monitor pod scaling:
+```sh
+kubectl get hpa
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+---
+## **Conclusion**
+By following these steps, you have:
+✅ Deployed a React app on Kubernetes
+✅ Configured autoscaling
+✅ Simulated rolling updates and rollbacks
+✅ Verified logs for debugging
 
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Now, your application is production-ready! 🚀
